@@ -46,6 +46,7 @@ async function initializeTransaction(
     currency: currency || SELLER_CURRENCY || "ISK",
     returnUrl: callbackUrl,
     reference: paymentId,
+    abandonUrl: "https://tickets.moment.is/seller/moment-eido",
     terminalIdentifier: STRAUMUR_TERMINAL_ID,
   };
 
