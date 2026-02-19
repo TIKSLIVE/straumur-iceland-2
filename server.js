@@ -357,6 +357,8 @@ app.post("/webhook", async (req, res) => {
 
     const payload = req.body;
 
+    console.log("WEBHOOK RECEIVED", req.body);
+
     // Extract the specific fields in the exact order required by Straumur
     const {
       checkoutReference,
@@ -369,7 +371,7 @@ app.post("/webhook", async (req, res) => {
 
     // Validate HMAC signature from payload body
     if (!hmacSignature) {
-      console.error("Missing HMAC signature in webhook payload");
+      console.log("Missing HMAC signature in webhook payload");
       return res.status(400).send("Missing HMAC signature");
     }
 
@@ -380,11 +382,11 @@ app.post("/webhook", async (req, res) => {
     const signaturesMatch = hmacSignature === calculatedSignatures.base64;
 
     if (!signaturesMatch) {
-      console.error("Invalid HMAC signature in webhook");
-      console.error("Expected (base64):", calculatedSignatures.base64);
+      console.log("Invalid HMAC signature in webhook");
+      console.log("Expected (base64):", calculatedSignatures.base64);
 
-      console.error("Received:", hmacSignature);
-      console.error("Full payload received:", JSON.stringify(payload, null, 2));
+      console.log("Received:", hmacSignature);
+      console.log("Full payload received:", JSON.stringify(payload, null, 2));
       return res.status(403).send("Invalid HMAC signature");
     }
 
@@ -398,14 +400,14 @@ app.post("/webhook", async (req, res) => {
     );
 
     if (!paymentId) {
-      console.error("No payment reference found in webhook payload");
+      console.log("No payment reference found in webhook payload");
       return res.status(400).send("No payment reference found");
     }
 
     // Get payment request
     const paymentRequest = await getPaymentRequest(paymentId);
     if (!paymentRequest) {
-      console.error(`Payment request not found for ID: ${paymentId}`);
+      console.log(`Payment request not found for ID: ${paymentId}`);
       return res.status(404).send("Payment request not found");
     }
 
