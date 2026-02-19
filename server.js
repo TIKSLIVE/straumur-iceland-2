@@ -46,7 +46,6 @@ async function initializeTransaction(
     currency: currency || SELLER_CURRENCY || "ISK",
     returnUrl: callbackUrl,
     reference: paymentId,
-    abandonUrl: "https://www.moment.is/",
     terminalIdentifier: STRAUMUR_TERMINAL_ID,
   };
 
@@ -184,34 +183,48 @@ function testStraumurExample() {
     "null:21135253156:9990QQAZ1221:48900:ISK:null:true";
   console.log("Expected payload string:", expectedPayloadString);
 
-  // Test our implementation
+  // Test our implementation (C# uses empty string for null, so expected payload is with "" not "null")
   const calculatedSignatures = calculateStraumurHMAC(testSecret, testPayload);
-  console.log("Our calculated signature (base64):", calculatedSignatures);
-  console.log(
-    "Matches expected (base64):",
-    calculatedSignatures.base64 === expectedSignature
-  );
+  const docSig = calculatedSignatures.documented.base64;
+  console.log("Our calculated signature (base64):", docSig);
+  console.log("Matches expected (base64):", docSig === expectedSignature);
 
-  // If it doesn't match, let's debug the payload construction
-  if (calculatedSignatures !== expectedSignature) {
+  if (docSig !== expectedSignature) {
     console.log("=== DEBUGGING PAYLOAD CONSTRUCTION ===");
-    const ourPayloadString = [
-      testPayload.checkoutReference ?? "null",
-      testPayload.payfacReference ?? "null",
-      testPayload.merchantReference ?? "null",
-      testPayload.amount ?? "null",
-      testPayload.currency ?? "null",
-      testPayload.reason ?? "null",
-      testPayload.success ?? "null",
-    ].join(":");
-    console.log("Our payload string:", ourPayloadString);
     console.log(
-      "Payload strings match:",
-      ourPayloadString === expectedPayloadString
+      "Our payload string:",
+      calculatedSignatures.documented.payloadString
     );
+    console.log("Expected payload string (doc):", expectedPayloadString);
     console.log("==================================");
   }
 
+  console.log("==================================");
+
+  // Working C# example from Straumur (Reason contains colons; null → empty string)
+  const workingExamplePayload = {
+    checkoutReference: "9eh9g1loq8ygdmtj1kw47dbogkr2qyijyen53hnglpx2eq4213",
+    payfacReference: "OOJWITWVQV42PSE8",
+    merchantReference: "89807267361535",
+    amount: "100000",
+    currency: "ISK",
+    reason: "383528:1111:03/2030",
+    success: "true",
+  };
+  const workingExampleKey = "42355b343e1a8879b54906abe30e25c0f4f2e1b7d29ad9f1";
+  const expectedWorkingSignature =
+    "V/iaRHNyBnmqVG1mRCZUQo7HTX2sZGgDsJzajV1hOVs=";
+  const workingResult = calculateStraumurHMAC(
+    workingExampleKey,
+    workingExamplePayload
+  );
+  const workingMatch =
+    workingResult.documented.base64 === expectedWorkingSignature;
+  console.log("=== WORKING C# EXAMPLE (Reason with colons) ===");
+  console.log("Expected:", expectedWorkingSignature);
+  console.log("Got:     ", workingResult.documented.base64);
+  console.log("Match:", workingMatch);
+  console.log("Payload string:", workingResult.documented.payloadString);
   console.log("==================================");
 }
 
@@ -242,40 +255,65 @@ function hmacBase64(keyBytes, payloadString) {
     .digest("base64");
 }
 
+function buildSignaturePayload(payload, fieldOrder) {
+  const get = (obj, ...keys) => {
+    for (const k of keys) {
+      const v = obj?.[k];
+      if (v != null) return String(v);
+    }
+    return "";
+  };
+  return fieldOrder.map((keys) => get(payload, ...keys)).join(":");
+}
+
+/** Supported field orders: documented C# order vs webhook JSON order (success before reason) */
+const SIGNATURE_FIELD_ORDERS = {
+  documented: [
+    ["checkoutReference", "CheckoutReference"],
+    ["payfacReference", "PayfacReference"],
+    ["merchantReference", "MerchantReference"],
+    ["amount", "Amount"],
+    ["currency", "Currency"],
+    ["reason", "Reason"],
+    ["success", "Success"],
+  ],
+  webhookOrder: [
+    ["payfacReference", "PayfacReference"],
+    ["merchantReference", "MerchantReference"],
+    ["checkoutReference", "CheckoutReference"],
+    ["amount", "Amount"],
+    ["currency", "Currency"],
+    ["success", "Success"],
+    ["reason", "Reason"],
+  ],
+};
+
 function calculateStraumurHMAC(webhookSecretHex, payload) {
-  // EXACT C# ORDER:
-  // CheckoutReference, PayfacReference, MerchantReference, Amount, Currency, Reason, Success
-  const signaturePayload = [
-    payload.checkoutReference ?? "",
-    payload.payfacReference ?? "",
-    payload.merchantReference ?? "",
-    payload.amount ?? "",
-    payload.currency ?? "",
-    payload.reason ?? "",
-    payload.success ?? "",
-  ].join(":");
+  const binaryKey = hexToBytes(webhookSecretHex);
 
-  const binaryKey = hexToBytes(webhookSecretHex); // hex key → bytes
-  const binaryPayload = Buffer.from(signaturePayload, "utf8"); // string → UTF-8 bytes
-
-  const base64 = crypto
-    .createHmac("sha256", binaryKey)
-    .update(binaryPayload)
-    .digest("base64");
-  const hex = crypto
-    .createHmac("sha256", binaryKey)
-    .update(binaryPayload)
-    .digest("hex");
+  const results = {};
+  for (const [name, order] of Object.entries(SIGNATURE_FIELD_ORDERS)) {
+    const signaturePayload = buildSignaturePayload(payload, order);
+    const binaryPayload = Buffer.from(signaturePayload, "utf8");
+    results[name] = {
+      base64: crypto
+        .createHmac("sha256", binaryKey)
+        .update(binaryPayload)
+        .digest("base64"),
+      hex: crypto
+        .createHmac("sha256", binaryKey)
+        .update(binaryPayload)
+        .digest("hex"),
+      payloadString: signaturePayload,
+    };
+  }
 
   console.log("=== DEBUG: PAYLOAD CONSTRUCTION ===");
-  console.log(
-    "Field order used: CheckoutReference, PayfacReference, MerchantReference, Amount, Currency, Reason, Success"
-  );
-  console.log("Final payload string:", signaturePayload);
-  console.log("Payload length:", signaturePayload.length);
+  console.log("Documented order payload:", results.documented.payloadString);
+  console.log("Webhook order payload:  ", results.webhookOrder.payloadString);
   console.log("==================================");
 
-  return { base64, hex, payloadString: signaturePayload };
+  return results;
 }
 
 app.get("/pay/callback", async (req, res) => {
@@ -357,8 +395,6 @@ app.post("/webhook", async (req, res) => {
 
     const payload = req.body;
 
-    console.log("WEBHOOK RECEIVED", req.body);
-
     // Extract the specific fields in the exact order required by Straumur
     const {
       checkoutReference,
@@ -371,23 +407,36 @@ app.post("/webhook", async (req, res) => {
 
     // Validate HMAC signature from payload body
     if (!hmacSignature) {
-      console.log("Missing HMAC signature in webhook payload");
+      console.error("Missing HMAC signature in webhook payload");
       return res.status(400).send("Missing HMAC signature");
     }
 
-    // Calculate HMAC signature using the helper function
+    // Calculate HMAC with both documented and webhook field orders (Straumur may use either)
     const calculatedSignatures = calculateStraumurHMAC(WEBHOOK_SECRET, payload);
-
-    // Check if received signature matches either format
-    const signaturesMatch = hmacSignature === calculatedSignatures.base64;
+    const matchDocumented =
+      hmacSignature === calculatedSignatures.documented.base64;
+    const matchWebhookOrder =
+      hmacSignature === calculatedSignatures.webhookOrder.base64;
+    const signaturesMatch = matchDocumented || matchWebhookOrder;
 
     if (!signaturesMatch) {
-      console.log("Invalid HMAC signature in webhook");
-      console.log("Expected (base64):", calculatedSignatures.base64);
-
-      console.log("Received:", hmacSignature);
-      console.log("Full payload received:", JSON.stringify(payload, null, 2));
+      console.error("Invalid HMAC signature in webhook");
+      console.error(
+        "Expected (documented order):",
+        calculatedSignatures.documented.base64
+      );
+      console.error(
+        "Expected (webhook order):  ",
+        calculatedSignatures.webhookOrder.base64
+      );
+      console.error("Received:", hmacSignature);
+      console.error("Full payload received:", JSON.stringify(payload, null, 2));
       return res.status(403).send("Invalid HMAC signature");
+    }
+    if (matchWebhookOrder && !matchDocumented) {
+      console.log(
+        "HMAC matched using webhook field order (payfac, merchant, checkout, amount, currency, success, reason)"
+      );
     }
 
     console.log("HMAC signature validated successfully");
@@ -400,14 +449,14 @@ app.post("/webhook", async (req, res) => {
     );
 
     if (!paymentId) {
-      console.log("No payment reference found in webhook payload");
+      console.error("No payment reference found in webhook payload");
       return res.status(400).send("No payment reference found");
     }
 
     // Get payment request
     const paymentRequest = await getPaymentRequest(paymentId);
     if (!paymentRequest) {
-      console.log(`Payment request not found for ID: ${paymentId}`);
+      console.error(`Payment request not found for ID: ${paymentId}`);
       return res.status(404).send("Payment request not found");
     }
 
@@ -549,6 +598,5 @@ app.get("/", async (req, res) => {
 app.listen(port, () => {
   console.log(`Listening at http://localhost:${port}`);
 
-  // Test our HMAC implementation against Straumur's documented example
-  testStraumurExample();
+
 });
