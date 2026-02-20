@@ -228,13 +228,10 @@ function testStraumurExample() {
   console.log("==================================");
 }
 
-function hexToBytes(hex) {
+/** Match working Straumur JS example: hex key → bytes (odd length padded with "0") */
+function convertHexToByteArray(hex) {
   if (hex.length % 2 === 1) hex += "0";
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-  }
-  return bytes;
+  return Buffer.from(hex, "hex");
 }
 
 function b64ToBytes(b64) {
@@ -289,7 +286,7 @@ const SIGNATURE_FIELD_ORDERS = {
 };
 
 function calculateStraumurHMAC(webhookSecretHex, payload) {
-  const binaryKey = hexToBytes(webhookSecretHex);
+  const binaryKey = convertHexToByteArray(webhookSecretHex);
 
   const results = {};
   for (const [name, order] of Object.entries(SIGNATURE_FIELD_ORDERS)) {
@@ -598,5 +595,6 @@ app.get("/", async (req, res) => {
 app.listen(port, () => {
   console.log(`Listening at http://localhost:${port}`);
 
-
+  // Test our HMAC implementation against Straumur's documented example
+  testStraumurExample();
 });
