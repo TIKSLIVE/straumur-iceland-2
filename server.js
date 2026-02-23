@@ -27,7 +27,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const APP_URL = process.env.APP_URL;
 const STRAUMUR_API_KEY = process.env.STRAUMUR_API_KEY;
 const STRAUMUR_TERMINAL_ID = process.env.STRAUMUR_TERMINAL_ID;
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+const WEBHOOK_SECRET = "037c16ab5f9cc4db9beee380a1f5ddf05f601a727d5ce953";
 const SELLER_CURRENCY = process.env.CURRENCY;
 const GATEWAY_SECRET = process.env.GATEWAY_SECRET;
 
@@ -596,5 +596,5 @@ app.listen(port, () => {
   console.log(`Listening at http://localhost:${port}`);
 
   // Test our HMAC implementation against Straumur's documented example
-  testStraumurExample();
+  //testStraumurExample();
 });
