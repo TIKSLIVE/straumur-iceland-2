@@ -412,22 +412,10 @@ app.post("/webhook", async (req, res) => {
     const calculatedSignatures = calculateStraumurHMAC(WEBHOOK_SECRET, payload);
     const matchDocumented =
       hmacSignature === calculatedSignatures.documented.base64;
-    const matchWebhookOrder =
-      hmacSignature === calculatedSignatures.webhookOrder.base64;
-    const signaturesMatch = matchDocumented || matchWebhookOrder;
+  
 
-    if (!signaturesMatch) {
+    if (!matchDocumented) {
       console.error("Invalid HMAC signature in webhook");
-      console.error(
-        "Expected (documented order):",
-        calculatedSignatures.documented.base64
-      );
-      console.error(
-        "Expected (webhook order):  ",
-        calculatedSignatures.webhookOrder.base64
-      );
-      console.error("Received:", hmacSignature);
-      console.error("Full payload received:", JSON.stringify(payload, null, 2));
       return res.status(403).send("Invalid HMAC signature");
     }
     if (matchWebhookOrder && !matchDocumented) {
