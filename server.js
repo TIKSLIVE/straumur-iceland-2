@@ -27,7 +27,14 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const APP_URL = process.env.APP_URL;
 const STRAUMUR_API_KEY = process.env.STRAUMUR_API_KEY;
 const STRAUMUR_TERMINAL_ID = process.env.STRAUMUR_TERMINAL_ID;
-const WEBHOOK_SECRET = "037c16ab5f9cc4db9beee380a1f5ddf05f601a727d5ce953";
+// All HMAC keys to try for webhook validation (env WEBHOOK_SECRET + array; first match wins)
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET?.trim() || "";
+const HMAC_KEYS = [
+  ...(WEBHOOK_SECRET ? [WEBHOOK_SECRET] : []),
+  "04d69fb95b33d185340bd5993d189d81b45d1c7efceee28d97", // prod
+  "037c16ab5f9cc4db9beee380a1f5ddf05f601a727d5ce953",
+  "60174178b7e7996f0b714459b137d4990f9cafc19cab6a60",
+].filter((k) => k && /^[0-9a-fA-F]+$/.test(String(k).trim()));
 const SELLER_CURRENCY = process.env.CURRENCY;
 const GATEWAY_SECRET = process.env.GATEWAY_SECRET;
 
@@ -384,15 +391,8 @@ app.get("/straumur/callback", async (req, res) => {
 
 app.post("/webhook", async (req, res) => {
   try {
-    // Check if webhook secret is configured
-    if (!WEBHOOK_SECRET) {
-      console.error("WEBHOOK_SECRET not configured");
-      return res.status(500).send("Webhook secret not configured");
-    }
-
     const payload = req.body;
 
-    // Extract the specific fields in the exact order required by Straumur
     const {
       checkoutReference,
       merchantReference,
@@ -402,19 +402,59 @@ app.post("/webhook", async (req, res) => {
       additionalData,
     } = payload;
 
-    // Validate HMAC signature from payload body
     if (!hmacSignature) {
       console.error("Missing HMAC signature in webhook payload");
       return res.status(400).send("Missing HMAC signature");
     }
 
-    // Calculate HMAC with both documented and webhook field orders (Straumur may use either)
-    const calculatedSignatures = calculateStraumurHMAC(WEBHOOK_SECRET, payload);
-    const matchDocumented =
-      hmacSignature === calculatedSignatures.documented.base64;
-  
+    if (!HMAC_KEYS.length) {
+      console.error("No HMAC keys configured (WEBHOOK_SECRET or HMAC_KEYS)");
+      return res.status(500).send("Webhook secret not configured");
+    }
 
-  
+    // Try each HMAC key; if any produces a matching signature, proceed
+    let validated = false;
+    let lastCalculated = null;
+    for (const key of HMAC_KEYS) {
+      const trimmed = key.trim();
+      const calculated = calculateStraumurHMAC(trimmed, payload);
+      lastCalculated = calculated;
+      const matchDocumented = hmacSignature === calculated.documented.base64;
+      const matchWebhookOrder =
+        hmacSignature === calculated.webhookOrder.base64;
+      if (matchDocumented || matchWebhookOrder) {
+        validated = true;
+        if (matchWebhookOrder && !matchDocumented) {
+          console.log(
+            "HMAC matched using webhook field order (key index " +
+              HMAC_KEYS.indexOf(key) +
+              ")"
+          );
+        }
+        break;
+      }
+    }
+
+    if (!validated) {
+      console.error(
+        "Invalid HMAC signature in webhook (tried " +
+          HMAC_KEYS.length +
+          " key(s))"
+      );
+      console.error("Received:", hmacSignature);
+      if (lastCalculated) {
+        console.error(
+          "Last key - documented:",
+          lastCalculated.documented.base64
+        );
+        console.error(
+          "Last key - webhook order:",
+          lastCalculated.webhookOrder.base64
+        );
+      }
+      console.error("Full payload:", JSON.stringify(payload, null, 2));
+      return res.status(403).send("Invalid HMAC signature");
+    }
 
     console.log("HMAC signature validated successfully");
 
