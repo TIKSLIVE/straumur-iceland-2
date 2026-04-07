@@ -34,6 +34,7 @@ const HMAC_KEYS = [
   "04d69fb95b33d185340bd5993d189d81b45d1c7efceee28d97", // prod
   "037c16ab5f9cc4db9beee380a1f5ddf05f601a727d5ce953",
   "60174178b7e7996f0b714459b137d4990f9cafc19cab6a60",
+  "2b7fe6a6f1d64d6bdf3513f086861209fcc9cf2a1348b7d3"
 ].filter((k) => k && /^[0-9a-fA-F]+$/.test(String(k).trim()));
 const SELLER_CURRENCY = process.env.CURRENCY;
 const GATEWAY_SECRET = process.env.GATEWAY_SECRET;
