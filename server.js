@@ -27,6 +27,12 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const APP_URL = process.env.APP_URL;
 const STRAUMUR_API_KEY = process.env.STRAUMUR_API_KEY;
 const STRAUMUR_TERMINAL_ID = process.env.STRAUMUR_TERMINAL_ID;
+const STRAUMUR_BASE_URL = "https://greidslugatt.straumur.is/api/v1";
+const STRAUMUR_PATHS = {
+  hostedCheckout: `${STRAUMUR_BASE_URL}/hostedcheckout`,
+  checkoutStatus: `${STRAUMUR_BASE_URL}/hostedcheckout/status`,
+  refund: `${STRAUMUR_BASE_URL}/modification/refund`,
+};
 // All HMAC keys to try for webhook validation (env WEBHOOK_SECRET + array; first match wins)
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET?.trim() || "";
 const HMAC_KEYS = [
@@ -39,6 +45,18 @@ const HMAC_KEYS = [
 const SELLER_CURRENCY = process.env.CURRENCY;
 const GATEWAY_SECRET = process.env.GATEWAY_SECRET;
 
+function getStraumurHeaders() {
+  return {
+    "X-API-key": `${STRAUMUR_API_KEY}`,
+    "Content-Type": "application/json",
+    "Cache-Control": "no-cache",
+  };
+}
+
+function logAxiosError(prefix, error) {
+  console.error(prefix, error.response ? error.response.data : error.message);
+}
+
 async function initializeTransaction(
   customerEmail,
   amount,
@@ -47,8 +65,6 @@ async function initializeTransaction(
   cancelUrl,
   currency
 ) {
-  const url = "https://greidslugatt.straumur.is/api/v1/hostedcheckout";
-
   const fields = {
     amount: Math.round(amount),
     currency: currency || SELLER_CURRENCY || "ISK",
@@ -58,12 +74,8 @@ async function initializeTransaction(
   };
 
   try {
-    const response = await axios.post(url, fields, {
-      headers: {
-        "X-API-key": `${STRAUMUR_API_KEY}`,
-        "Content-Type": "application/json",
-        "Cache-Control": "no-cache",
-      },
+    const response = await axios.post(STRAUMUR_PATHS.hostedCheckout, fields, {
+      headers: getStraumurHeaders(),
     });
 
     return {
@@ -72,31 +84,20 @@ async function initializeTransaction(
       checkoutReference: response.data.checkoutReference,
     };
   } catch (error) {
-    console.error(
-      "Error initializing Straumur transaction:",
-      error.response ? error.response.data : error.message
-    );
+    logAxiosError("Error initializing Straumur transaction:", error);
     throw error;
   }
 }
 
 async function getStraumurCheckoutStatus(checkoutReference) {
-  const url = `https://greidslugatt.straumur.is/api/v1/hostedcheckout/status/${checkoutReference}`;
-
-  const headers = {
-    "X-API-key": `${STRAUMUR_API_KEY}`,
-    "Cache-Control": "no-cache",
-    "Content-Type": "application/json",
-  };
-
   try {
-    const response = await axios.get(url, { headers });
+    const response = await axios.get(
+      `${STRAUMUR_PATHS.checkoutStatus}/${checkoutReference}`,
+      { headers: getStraumurHeaders() }
+    );
     return response.data;
   } catch (error) {
-    console.error(
-      "Error getting Straumur checkout status:",
-      error.response ? error.response.data : error.message
-    );
+    logAxiosError("Error getting Straumur checkout status:", error);
     throw error;
   }
 }
@@ -117,8 +118,6 @@ async function createStraumurRefund(
   currency = "ISK",
   refundReason = null
 ) {
-  const url = "https://greidslugatt.straumur.is/api/v1/modification/refund";
-
   const data = {
     reference: merchantReference,
     payfacReference: payfacReference,
@@ -138,24 +137,17 @@ async function createStraumurRefund(
     data.refundReason = refundReason;
   }
 
-  const headers = {
-    "X-API-key": `${STRAUMUR_API_KEY}`,
-    "Content-Type": "application/json",
-    "Cache-Control": "no-cache",
-  };
-
   try {
-    const response = await axios.post(url, data, { headers });
+    const response = await axios.post(STRAUMUR_PATHS.refund, data, {
+      headers: getStraumurHeaders(),
+    });
     console.log("Straumur refund created successfully:", response.data);
     return {
       success: true,
       data: response.data,
     };
   } catch (error) {
-    console.error(
-      "Error creating Straumur refund:",
-      error.response ? error.response.data : error.message
-    );
+    logAxiosError("Error creating Straumur refund:", error);
     return {
       success: false,
       error: error.response ? error.response.data : error.message,
@@ -163,101 +155,10 @@ async function createStraumurRefund(
   }
 }
 
-// Test function to verify our implementation matches Straumur's example
-function testStraumurExample() {
-  console.log("=== TESTING STRAUMUR EXAMPLE ===");
-
-  // Straumur's documented example
-  const testPayload = {
-    checkoutReference: null,
-    payfacReference: "21135253156",
-    merchantReference: "9990QQAZ1221",
-    amount: "48900",
-    currency: "ISK",
-    reason: null,
-    success: "true",
-  };
-
-  const testSecret =
-    "4eab969bd65a39c17c906dfcef1fe69d481716b0845a6c0892284cf9c06e4314";
-  const expectedSignature = "oH4Sgo4cZ/O8489HQU7TbcvohJkH4eHbz50Q3G+VXfk=";
-
-  console.log("Test payload:", testPayload);
-  console.log("Test secret:", testSecret);
-  console.log("Expected signature:", expectedSignature);
-
-  // Show the exact payload string that should be signed
-  const expectedPayloadString =
-    "null:21135253156:9990QQAZ1221:48900:ISK:null:true";
-  console.log("Expected payload string:", expectedPayloadString);
-
-  // Test our implementation (C# uses empty string for null, so expected payload is with "" not "null")
-  const calculatedSignatures = calculateStraumurHMAC(testSecret, testPayload);
-  const docSig = calculatedSignatures.documented.base64;
-  console.log("Our calculated signature (base64):", docSig);
-  console.log("Matches expected (base64):", docSig === expectedSignature);
-
-  if (docSig !== expectedSignature) {
-    console.log("=== DEBUGGING PAYLOAD CONSTRUCTION ===");
-    console.log(
-      "Our payload string:",
-      calculatedSignatures.documented.payloadString
-    );
-    console.log("Expected payload string (doc):", expectedPayloadString);
-    console.log("==================================");
-  }
-
-  console.log("==================================");
-
-  // Working C# example from Straumur (Reason contains colons; null → empty string)
-  const workingExamplePayload = {
-    checkoutReference: "9eh9g1loq8ygdmtj1kw47dbogkr2qyijyen53hnglpx2eq4213",
-    payfacReference: "OOJWITWVQV42PSE8",
-    merchantReference: "89807267361535",
-    amount: "100000",
-    currency: "ISK",
-    reason: "383528:1111:03/2030",
-    success: "true",
-  };
-  const workingExampleKey = "42355b343e1a8879b54906abe30e25c0f4f2e1b7d29ad9f1";
-  const expectedWorkingSignature =
-    "V/iaRHNyBnmqVG1mRCZUQo7HTX2sZGgDsJzajV1hOVs=";
-  const workingResult = calculateStraumurHMAC(
-    workingExampleKey,
-    workingExamplePayload
-  );
-  const workingMatch =
-    workingResult.documented.base64 === expectedWorkingSignature;
-  console.log("=== WORKING C# EXAMPLE (Reason with colons) ===");
-  console.log("Expected:", expectedWorkingSignature);
-  console.log("Got:     ", workingResult.documented.base64);
-  console.log("Match:", workingMatch);
-  console.log("Payload string:", workingResult.documented.payloadString);
-  console.log("==================================");
-}
-
 /** Match working Straumur JS example: hex key → bytes (odd length padded with "0") */
 function convertHexToByteArray(hex) {
   if (hex.length % 2 === 1) hex += "0";
   return Buffer.from(hex, "hex");
-}
-
-function b64ToBytes(b64) {
-  try {
-    return Buffer.from(b64.trim(), "base64");
-  } catch {
-    return null;
-  }
-}
-
-function utf8ToBytes(s) {
-  return Buffer.from((s ?? "").trim(), "utf8");
-}
-function hmacBase64(keyBytes, payloadString) {
-  return crypto
-    .createHmac("sha256", keyBytes)
-    .update(Buffer.from(payloadString, "utf8"))
-    .digest("base64");
 }
 
 function buildSignaturePayload(payload, fieldOrder) {
@@ -319,6 +220,32 @@ function calculateStraumurHMAC(webhookSecretHex, payload) {
   console.log("==================================");
 
   return results;
+}
+
+function validateStraumurWebhookSignature(payload, hmacSignature) {
+  let lastCalculated = null;
+
+  for (let i = 0; i < HMAC_KEYS.length; i++) {
+    const trimmedKey = HMAC_KEYS[i].trim();
+    const calculated = calculateStraumurHMAC(trimmedKey, payload);
+    lastCalculated = calculated;
+
+    const matchDocumented = hmacSignature === calculated.documented.base64;
+    const matchWebhookOrder = hmacSignature === calculated.webhookOrder.base64;
+
+    if (matchDocumented || matchWebhookOrder) {
+      return {
+        validated: true,
+        matchedWebhookOrderOnly: matchWebhookOrder && !matchDocumented,
+        keyIndex: i,
+      };
+    }
+  }
+
+  return {
+    validated: false,
+    lastCalculated,
+  };
 }
 
 app.get("/pay/callback", async (req, res) => {
@@ -413,44 +340,35 @@ app.post("/webhook", async (req, res) => {
       return res.status(500).send("Webhook secret not configured");
     }
 
-    // Try each HMAC key; if any produces a matching signature, proceed
-    let validated = false;
-    let lastCalculated = null;
-    for (const key of HMAC_KEYS) {
-      const trimmed = key.trim();
-      const calculated = calculateStraumurHMAC(trimmed, payload);
-      lastCalculated = calculated;
-      const matchDocumented = hmacSignature === calculated.documented.base64;
-      const matchWebhookOrder =
-        hmacSignature === calculated.webhookOrder.base64;
-      if (matchDocumented || matchWebhookOrder) {
-        validated = true;
-        if (matchWebhookOrder && !matchDocumented) {
-          console.log(
-            "HMAC matched using webhook field order (key index " +
-              HMAC_KEYS.indexOf(key) +
-              ")"
-          );
-        }
-        break;
-      }
+    const signatureResult = validateStraumurWebhookSignature(
+      payload,
+      hmacSignature
+    );
+
+    if (
+      signatureResult.validated &&
+      signatureResult.matchedWebhookOrderOnly
+    ) {
+      console.log(
+        `HMAC matched using webhook field order (key index ${signatureResult.keyIndex})`
+      );
     }
 
-    if (!validated) {
+    if (!signatureResult.validated) {
       console.error(
         "Invalid HMAC signature in webhook (tried " +
           HMAC_KEYS.length +
           " key(s))"
       );
       console.error("Received:", hmacSignature);
-      if (lastCalculated) {
+      if (signatureResult.lastCalculated) {
         console.error(
           "Last key - documented:",
-          lastCalculated.documented.base64
+          signatureResult.lastCalculated.documented.base64
         );
         console.error(
           "Last key - webhook order:",
-          lastCalculated.webhookOrder.base64
+          signatureResult.lastCalculated.webhookOrder.base64
         );
       }
       console.error("Full payload:", JSON.stringify(payload, null, 2));
@@ -545,6 +463,9 @@ app.post("/payment/refund", async (req, res) => {
       .digest("hex");
 
     const requestSignature = req.headers["x-vivenu-signature"];
+    if (typeof requestSignature !== "string") {
+      return res.status(400).send("missing signature");
+    }
     const isValid = signature.toLowerCase() === requestSignature.toLowerCase();
     if (!isValid) {
       return res.status(400).send("invalid signature");
@@ -615,7 +536,4 @@ app.get("/", async (req, res) => {
 
 app.listen(port, () => {
   console.log(`Listening at http://localhost:${port}`);
-
-  // Test our HMAC implementation against Straumur's documented example
-  //testStraumurExample();
 });
