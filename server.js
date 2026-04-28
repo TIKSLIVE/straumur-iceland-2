@@ -20,7 +20,7 @@ app.use(
     verify: (req, res, buf) => {
       req.rawBody = buf.toString();
     },
-  })
+  }),
 );
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -35,19 +35,45 @@ const STRAUMUR_PATHS = {
 };
 // All HMAC keys to try for webhook validation (env WEBHOOK_SECRET + array; first match wins)
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET?.trim() || "";
-const HMAC_KEYS = [
+const DEFAULT_HMAC_KEYS = [
   ...(WEBHOOK_SECRET ? [WEBHOOK_SECRET] : []),
   "04d69fb95b33d185340bd5993d189d81b45d1c7efceee28d97", // prod
   "037c16ab5f9cc4db9beee380a1f5ddf05f601a727d5ce953",
   "60174178b7e7996f0b714459b137d4990f9cafc19cab6a60",
-  "2b7fe6a6f1d64d6bdf3513f086861209fcc9cf2a1348b7d3"
+  "2b7fe6a6f1d64d6bdf3513f086861209fcc9cf2a1348b7d3",
 ].filter((k) => k && /^[0-9a-fA-F]+$/.test(String(k).trim()));
 const SELLER_CURRENCY = process.env.CURRENCY;
 const GATEWAY_SECRET = process.env.GATEWAY_SECRET;
 
-function getStraumurHeaders() {
+function toEnvKeySegment(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .toUpperCase();
+}
+
+function getSellerCredentials(sellerId) {
+  const envSegment = toEnvKeySegment(sellerId);
+  const sellerWebhookSecret =
+    process.env[`WEBHOOK_SECRET_${envSegment}`]?.trim() || "";
+  const hmacKeys = [
+    ...(sellerWebhookSecret ? [sellerWebhookSecret] : []),
+    ...DEFAULT_HMAC_KEYS,
+  ].filter((k) => k && /^[0-9a-fA-F]+$/.test(String(k).trim()));
+
   return {
-    "X-API-key": `${STRAUMUR_API_KEY}`,
+    apiKey: process.env[`API_KEY_${envSegment}`] || process.env.API_KEY,
+    gatewaySecret:
+      process.env[`GATEWAY_SECRET_${envSegment}`] || GATEWAY_SECRET,
+    straumurApiKey: STRAUMUR_API_KEY,
+    terminalIdentifier: STRAUMUR_TERMINAL_ID,
+    hmacKeys,
+  };
+}
+
+function getStraumurHeaders(straumurApiKey) {
+  return {
+    "X-API-key": `${straumurApiKey}`,
     "Content-Type": "application/json",
     "Cache-Control": "no-cache",
   };
@@ -58,24 +84,24 @@ function logAxiosError(prefix, error) {
 }
 
 async function initializeTransaction(
-  customerEmail,
   amount,
   paymentId,
   callbackUrl,
-  cancelUrl,
-  currency
+  currency,
+  straumurApiKey,
+  terminalIdentifier,
 ) {
   const fields = {
     amount: Math.round(amount),
     currency: currency || SELLER_CURRENCY || "ISK",
     returnUrl: callbackUrl,
     reference: paymentId,
-    terminalIdentifier: STRAUMUR_TERMINAL_ID,
+    terminalIdentifier,
   };
 
   try {
     const response = await axios.post(STRAUMUR_PATHS.hostedCheckout, fields, {
-      headers: getStraumurHeaders(),
+      headers: getStraumurHeaders(straumurApiKey),
     });
 
     return {
@@ -89,11 +115,11 @@ async function initializeTransaction(
   }
 }
 
-async function getStraumurCheckoutStatus(checkoutReference) {
+async function getStraumurCheckoutStatus(checkoutReference, straumurApiKey) {
   try {
     const response = await axios.get(
       `${STRAUMUR_PATHS.checkoutStatus}/${checkoutReference}`,
-      { headers: getStraumurHeaders() }
+      { headers: getStraumurHeaders(straumurApiKey) },
     );
     return response.data;
   } catch (error) {
@@ -116,7 +142,8 @@ async function createStraumurRefund(
   payfacReference,
   amount,
   currency = "ISK",
-  refundReason = null
+  refundReason = null,
+  straumurApiKey,
 ) {
   const data = {
     reference: merchantReference,
@@ -139,7 +166,7 @@ async function createStraumurRefund(
 
   try {
     const response = await axios.post(STRAUMUR_PATHS.refund, data, {
-      headers: getStraumurHeaders(),
+      headers: getStraumurHeaders(straumurApiKey),
     });
     console.log("Straumur refund created successfully:", response.data);
     return {
@@ -222,11 +249,11 @@ function calculateStraumurHMAC(webhookSecretHex, payload) {
   return results;
 }
 
-function validateStraumurWebhookSignature(payload, hmacSignature) {
+function validateStraumurWebhookSignature(payload, hmacSignature, hmacKeys) {
   let lastCalculated = null;
 
-  for (let i = 0; i < HMAC_KEYS.length; i++) {
-    const trimmedKey = HMAC_KEYS[i].trim();
+  for (let i = 0; i < hmacKeys.length; i++) {
+    const trimmedKey = hmacKeys[i].trim();
     const calculated = calculateStraumurHMAC(trimmedKey, payload);
     lastCalculated = calculated;
 
@@ -248,10 +275,49 @@ function validateStraumurWebhookSignature(payload, hmacSignature) {
   };
 }
 
-app.get("/pay/callback", async (req, res) => {
+function requireSellerCredentials(req, res) {
+  const { sellerId } = req.params;
+  if (!sellerId) {
+    res.status(400).send("Missing sellerId");
+    return null;
+  }
+
+  const credentials = getSellerCredentials(sellerId);
+  if (!credentials.apiKey) {
+    res.status(500).send(`Missing API key for seller ${sellerId}`);
+    return null;
+  }
+  if (!credentials.gatewaySecret) {
+    res.status(500).send(`Missing gateway secret for seller ${sellerId}`);
+    return null;
+  }
+  if (!credentials.straumurApiKey) {
+    res.status(500).send(`Missing Straumur API key for seller ${sellerId}`);
+    return null;
+  }
+  if (!credentials.terminalIdentifier) {
+    res.status(500).send(`Missing terminal ID for seller ${sellerId}`);
+    return null;
+  }
+  if (!credentials.hmacKeys.length) {
+    res.status(500).send(`Missing webhook secret for seller ${sellerId}`);
+    return null;
+  }
+
+  return { sellerId, credentials };
+}
+
+app.get("/:sellerId/pay/callback", async (req, res) => {
   try {
+    const sellerContext = requireSellerCredentials(req, res);
+    if (!sellerContext) return;
+    const { sellerId, credentials } = sellerContext;
+
     const paymentId = req.query.paymentId;
-    const paymentRequest = await getPaymentRequest(paymentId);
+    const paymentRequest = await getPaymentRequest(
+      paymentId,
+      credentials.apiKey,
+    );
 
     if (paymentRequest && paymentRequest.status !== "NEW") {
       console.error("payment request is already processed");
@@ -261,12 +327,12 @@ app.get("/pay/callback", async (req, res) => {
     console.log("Payment Request Received => ", paymentRequest);
 
     const details = await initializeTransaction(
-      paymentRequest.customer.email,
       paymentRequest.amount * 100,
       paymentId,
-      `${APP_URL}/straumur/callback?paymentRequestId=${paymentId}`,
-      `${APP_URL}/straumur/callback?paymentRequestId=${paymentId}`,
-      paymentRequest.currency
+      `${APP_URL}/${sellerId}/straumur/callback?paymentRequestId=${paymentId}`,
+      paymentRequest.currency,
+      credentials.straumurApiKey,
+      credentials.terminalIdentifier,
     );
 
     if (details && details.success) {
@@ -281,13 +347,20 @@ app.get("/pay/callback", async (req, res) => {
   }
 });
 
-app.get("/straumur/callback", async (req, res) => {
+app.get("/:sellerId/straumur/callback", async (req, res) => {
   try {
+    const sellerContext = requireSellerCredentials(req, res);
+    if (!sellerContext) return;
+    const { credentials } = sellerContext;
+
     let paymentId = req.query.paymentRequestId;
 
     let checkoutReference = req.query.checkoutReference;
 
-    const paymentRequest = await getPaymentRequest(paymentId);
+    const paymentRequest = await getPaymentRequest(
+      paymentId,
+      credentials.apiKey,
+    );
 
     if (paymentRequest.status !== "NEW") {
       console.error("Payment request is already processed");
@@ -299,14 +372,21 @@ app.get("/straumur/callback", async (req, res) => {
       }
     }
 
-    const checkoutStatus = await getStraumurCheckoutStatus(checkoutReference);
+    const checkoutStatus = await getStraumurCheckoutStatus(
+      checkoutReference,
+      credentials.straumurApiKey,
+    );
 
     console.log("STRAUMUR CHECKOUT STATUS:", checkoutStatus);
 
     console.log("STRAUMUR callback received for paymentId:", paymentId);
 
     if (checkoutStatus.status === "Completed") {
-      await completePaymentRequest(paymentId);
+      await completePaymentRequest(
+        paymentId,
+        credentials.apiKey,
+        credentials.gatewaySecret,
+      );
       return res.redirect(paymentRequest.successReturnUrl);
     }
 
@@ -317,8 +397,12 @@ app.get("/straumur/callback", async (req, res) => {
   }
 });
 
-app.post("/webhook", async (req, res) => {
+app.post("/:sellerId/webhook", async (req, res) => {
   try {
+    const sellerContext = requireSellerCredentials(req, res);
+    if (!sellerContext) return;
+    const { credentials } = sellerContext;
+
     const payload = req.body;
 
     const {
@@ -335,40 +419,33 @@ app.post("/webhook", async (req, res) => {
       return res.status(400).send("Missing HMAC signature");
     }
 
-    if (!HMAC_KEYS.length) {
-      console.error("No HMAC keys configured (WEBHOOK_SECRET or HMAC_KEYS)");
-      return res.status(500).send("Webhook secret not configured");
-    }
-
     const signatureResult = validateStraumurWebhookSignature(
       payload,
-      hmacSignature
+      hmacSignature,
+      credentials.hmacKeys,
     );
 
-    if (
-      signatureResult.validated &&
-      signatureResult.matchedWebhookOrderOnly
-    ) {
+    if (signatureResult.validated && signatureResult.matchedWebhookOrderOnly) {
       console.log(
-        `HMAC matched using webhook field order (key index ${signatureResult.keyIndex})`
+        `HMAC matched using webhook field order (key index ${signatureResult.keyIndex})`,
       );
     }
 
     if (!signatureResult.validated) {
       console.error(
         "Invalid HMAC signature in webhook (tried " +
-          HMAC_KEYS.length +
-          " key(s))"
+          credentials.hmacKeys.length +
+          " key(s))",
       );
       console.error("Received:", hmacSignature);
       if (signatureResult.lastCalculated) {
         console.error(
           "Last key - documented:",
-          signatureResult.lastCalculated.documented.base64
+          signatureResult.lastCalculated.documented.base64,
         );
         console.error(
           "Last key - webhook order:",
-          signatureResult.lastCalculated.webhookOrder.base64
+          signatureResult.lastCalculated.webhookOrder.base64,
         );
       }
       console.error("Full payload:", JSON.stringify(payload, null, 2));
@@ -381,7 +458,7 @@ app.post("/webhook", async (req, res) => {
     const paymentId = merchantReference || checkoutReference;
 
     console.log(
-      `STRAUMUR WEBHOOK RECEIVED - Event: ${eventType}, Payment ID: ${paymentId}, Success: ${success}`
+      `STRAUMUR WEBHOOK RECEIVED - Event: ${eventType}, Payment ID: ${paymentId}, Success: ${success}`,
     );
 
     if (!paymentId) {
@@ -390,7 +467,10 @@ app.post("/webhook", async (req, res) => {
     }
 
     // Get payment request
-    const paymentRequest = await getPaymentRequest(paymentId);
+    const paymentRequest = await getPaymentRequest(
+      paymentId,
+      credentials.apiKey,
+    );
     if (!paymentRequest) {
       console.error(`Payment request not found for ID: ${paymentId}`);
       return res.status(404).send("Payment request not found");
@@ -407,17 +487,25 @@ app.post("/webhook", async (req, res) => {
         if (success === "true") {
           console.log(`Authorization successful for payment: ${paymentId}`);
           // Complete the payment request
-          await completePaymentRequest(paymentId);
+          await completePaymentRequest(
+            paymentId,
+            credentials.apiKey,
+            credentials.gatewaySecret,
+          );
         }
         break;
 
       case "Capture":
         if (success === "true") {
           // Complete the payment request
-          await completePaymentRequest(paymentId);
+          await completePaymentRequest(
+            paymentId,
+            credentials.apiKey,
+            credentials.gatewaySecret,
+          );
         } else {
           console.error(
-            `Capture failed for payment: ${paymentId}, Reason: ${reason}`
+            `Capture failed for payment: ${paymentId}, Reason: ${reason}`,
           );
           // Handle failed capture
         }
@@ -425,7 +513,7 @@ app.post("/webhook", async (req, res) => {
 
       default:
         console.warn(
-          `Unknown event type: ${eventType} for payment: ${paymentId}`
+          `Unknown event type: ${eventType} for payment: ${paymentId}`,
         );
         break;
     }
@@ -449,8 +537,12 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-app.post("/payment/refund", async (req, res) => {
+app.post("/:sellerId/payment/refund", async (req, res) => {
   try {
+    const sellerContext = requireSellerCredentials(req, res);
+    if (!sellerContext) return;
+    const { credentials } = sellerContext;
+
     const payload = req.body;
 
     if (payload.type !== "payment.refund") {
@@ -458,7 +550,7 @@ app.post("/payment/refund", async (req, res) => {
     }
 
     const signature = crypto
-      .createHmac("sha256", GATEWAY_SECRET)
+      .createHmac("sha256", credentials.gatewaySecret)
       .update(req.rawBody)
       .digest("hex");
 
@@ -482,16 +574,25 @@ app.post("/payment/refund", async (req, res) => {
       transactionId,
     } = payload.data;
 
-    const transactionDetails = await getTransactionById(transactionId);
+    const transactionDetails = await getTransactionById(
+      transactionId,
+      credentials.apiKey,
+    );
 
     const checkoutId = transactionDetails.checkoutId;
 
-    const checkoutDetails = await getCheckoutById(checkoutId);
+    const checkoutDetails = await getCheckoutById(
+      checkoutId,
+      credentials.apiKey,
+    );
 
     const paymentRequestId =
       checkoutDetails.docs[0] && checkoutDetails.docs[0].paymentRequestId;
 
-    const checkoutStatus = await getStraumurCheckoutStatus(paymentRequestId);
+    const checkoutStatus = await getStraumurCheckoutStatus(
+      paymentRequestId,
+      credentials.straumurApiKey,
+    );
 
     console.log("CHECKOUT STATUS => ", checkoutStatus);
 
@@ -505,7 +606,8 @@ app.post("/payment/refund", async (req, res) => {
       psp,
       amount,
       currency,
-      refundReason
+      refundReason,
+      credentials.straumurApiKey,
     );
 
     if (refundResult.success) {

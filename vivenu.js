@@ -2,20 +2,22 @@ import { nanoid } from "nanoid";
 import fetch from "node-fetch";
 
 const VIVENU_URL = process.env.VIVENU_URL || "https://vivenu.com";
-const API_KEY = process.env.API_KEY;
-const GATEWAY_SECRET = process.env.GATEWAY_SECRET;
 
-export const getPaymentRequest = async (paymentId) => {
+function getAuthHeaders(apiKey) {
+  return {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+    Authorization: `Bearer ${apiKey}`,
+  };
+}
+
+export const getPaymentRequest = async (paymentId, apiKey) => {
   try {
     const response = await fetch(
       `${VIVENU_URL}/api/payments/requests/${paymentId}`,
       {
         method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          Authorization: `Bearer ${API_KEY}`,
-        },
+        headers: getAuthHeaders(apiKey),
       }
     );
 
@@ -30,17 +32,13 @@ export const getPaymentRequest = async (paymentId) => {
   }
 };
 
-export const getTransactionById = async (transactionId) => {
+export const getTransactionById = async (transactionId, apiKey) => {
   try {
     const response = await fetch(
       `${VIVENU_URL}/api/transactions/${transactionId}`,
       {
         method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          Authorization: `Bearer ${API_KEY}`,
-        },
+        headers: getAuthHeaders(apiKey),
       }
     );
 
@@ -57,17 +55,13 @@ export const getTransactionById = async (transactionId) => {
   }
 };
 
-export const getCheckoutById = async (checkoutId) => {
+export const getCheckoutById = async (checkoutId, apiKey) => {
   try {
     const response = await fetch(
       `${VIVENU_URL}/api/payments?checkoutId=${checkoutId}`,
       {
         method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          Authorization: `Bearer ${API_KEY}`,
-        },
+        headers: getAuthHeaders(apiKey),
       }
     );
 
@@ -84,19 +78,19 @@ export const getCheckoutById = async (checkoutId) => {
   }
 };
 
-export const completePaymentRequest = async (paymentId) => {
+export const completePaymentRequest = async (
+  paymentId,
+  apiKey,
+  gatewaySecret
+) => {
   try {
     const response = await fetch(
       `${VIVENU_URL}/api/payments/requests/${paymentId}/confirm`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          Authorization: `Bearer ${API_KEY}`,
-        },
+        headers: getAuthHeaders(apiKey),
         body: JSON.stringify({
-          gatewaySecret: GATEWAY_SECRET,
+          gatewaySecret,
           reference: nanoid(),
         }),
       }
