@@ -45,15 +45,8 @@ const DEFAULT_HMAC_KEYS = [
 const SELLER_CURRENCY = process.env.CURRENCY;
 const GATEWAY_SECRET = process.env.GATEWAY_SECRET;
 
-function toEnvKeySegment(value) {
-  return String(value || "")
-    .trim()
-    .replace(/[^a-zA-Z0-9]+/g, "_")
-    .toUpperCase();
-}
-
 function getSellerCredentials(sellerId) {
-  const envSegment = toEnvKeySegment(sellerId);
+  const envSegment = sellerId.toString();
   const sellerWebhookSecret =
     process.env[`WEBHOOK_SECRET_${envSegment}`]?.trim() || "";
   const hmacKeys = [
