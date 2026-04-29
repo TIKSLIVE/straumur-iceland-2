@@ -12,13 +12,16 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@nuxtjs/workbox": "^3.0.0-beta.16",
+    "@libsql/client": "^0.17.3",
     "axios": "^1.7.2",
     "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
     "nanoid": "^5.0.7",
-    "node-fetch": "^2.6.1"
+    "node-fetch": "^2.6.7"
   },
   "devDependencies": {
     "@babel/cli": "^7.24.1",
