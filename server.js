@@ -40,6 +40,7 @@ const HMAC_KEYS = WEBHOOK_SECRETS_RAW.split(",")
   .filter((k) => k && /^[0-9a-fA-F]+$/.test(k));
 
 const app = express();
+app.set("trust proxy", 1);
 app.use(
   bodyParser.json({
     verify: (req, _res, buf) => {
